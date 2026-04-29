@@ -1,0 +1,95 @@
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+
+// --- Network Credentials ---
+const char* ssid = "sol"; 
+const char* password = "kathires";
+
+// --- Telegram Credentials ---
+#define BOTtoken "8572235461:AAGhqzsTSJwIZB6yoKhSYDaEks1GE_DDGG8"
+#define CHAT_ID "6914878998"
+
+// --- Pin Definitions ---
+const int gasPin = 34;      
+const int potPin = 35;      
+const int buzzerPin = 25;   
+const int ledRed = 21;      
+const int ledYellow = 17;   // Added Yellow LED
+const int ledGreen = 18;    
+
+WiFiClientSecure client;
+UniversalTelegramBot bot(BOTtoken, client);
+
+unsigned long lastTelegramTime = 0;
+const unsigned long telegramInterval = 5000; 
+
+void setup() {
+  Serial.begin(115200);
+  
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(ledRed, OUTPUT);
+  pinMode(ledYellow, OUTPUT); // Initialize Yellow
+  pinMode(ledGreen, OUTPUT);
+
+  digitalWrite(ledGreen, LOW);
+  digitalWrite(ledYellow, LOW);
+  digitalWrite(ledRed, LOW);
+
+  Serial.println("\n--- Starting ALLEN NODE ---");
+  WiFi.begin(ssid, password);
+  client.setInsecure(); 
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi Connected!");
+  bot.sendMessage(CHAT_ID, "🛡️ ALLEN Node: System Online", "");
+  digitalWrite(ledGreen, HIGH); 
+}
+
+void loop() {
+  int gasLevel = analogRead(gasPin);
+  int potValue = analogRead(potPin);
+
+  // Adjust Threshold via Potentiometer
+  int dangerThreshold = map(potValue, 0, 4095, 400, 3500);
+  // Warning triggers at 70% of the danger level
+  int warningThreshold = dangerThreshold * 0.7;
+
+  if (gasLevel >= dangerThreshold) {
+    // --- DANGER STATE ---
+    digitalWrite(ledRed, HIGH);
+    digitalWrite(ledYellow, LOW);
+    digitalWrite(ledGreen, LOW);
+    tone(buzzerPin, 2000); 
+
+    if (millis() - lastTelegramTime > telegramInterval) {
+      String message = "🚨 *LPG LEAK DETECTED!*\nLevel: " + String(gasLevel);
+      bot.sendMessage(CHAT_ID, message, "Markdown");
+      lastTelegramTime = millis();
+    }
+  } 
+  else if (gasLevel >= warningThreshold) {
+    // --- WARNING STATE ---
+    digitalWrite(ledRed, LOW);
+    digitalWrite(ledYellow, HIGH);
+    digitalWrite(ledGreen, LOW);
+    noTone(buzzerPin); // Visual warning only
+  }
+  else {
+    // --- SAFE STATE ---
+    digitalWrite(ledRed, LOW);
+    digitalWrite(ledYellow, LOW);
+    digitalWrite(ledGreen, HIGH);
+    noTone(buzzerPin);
+  }
+
+  Serial.print("Gas: "); Serial.print(gasLevel);
+  Serial.print(" | Warning: "); Serial.print(warningThreshold);
+  Serial.print(" | Danger: "); Serial.println(dangerThreshold);
+
+  delay(200); 
+}
