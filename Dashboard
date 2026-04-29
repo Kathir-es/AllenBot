@@ -1,0 +1,549 @@
+import javax.swing.*;
+import javax.swing.border.*;
+import java.awt.*;
+import java.awt.geom.*;
+
+public class tut1 extends JFrame {
+
+    // --- State ---
+    private int currentValue = 0;
+    private int peakValue   = 0;
+    private int breachCount = 0;
+    private boolean wasInDanger = false;
+
+    // --- UI Components ---
+    private JLabel gasValueLabel;
+    private JLabel peakValueLabel;
+    private JLabel breachCountLabel;
+    private JProgressBar gasGauge;
+
+    private JPanel statusPanel;
+    private JLabel statusIcon;
+    private JLabel statusText;
+
+    private LPGColorIndicator colorIndicator;
+    private PotentiometerPanel potPanel;
+
+    private JLabel demoStepLabel;
+    private Timer  demoTimer;
+    private JSlider simSlider;
+
+    // --- Demo sequence: {targetValue, holdMs, label} ---
+    private static final Object[][] DEMO_STEPS = {
+        {   0,  800, "startup – sensor at zero"         },
+        { 300,  900, "idle – room air, no gas"          },
+        { 750, 1000, "normal – background LPG trace"    },
+        {1200, 1000, "slight rise – ventilate area"     },
+        {1800, 1200, "approaching warning threshold..."  },
+        {2100, 1500, "WARNING zone entered"              },
+        {2600, 1200, "WARNING – gas level climbing"     },
+        {3100, 1800, "DANGER – leak detected!"          },
+        {3800, 1500, "CRITICAL – evacuate now!"         },
+        {4095, 1000, "SENSOR MAXED OUT"                 },
+        {3200,  800, "leak source partially sealed"     },
+        {2400, 1000, "dropping back through warning"    },
+        {1500, 1000, "recovering..."                    },
+        { 600, 1200, "returning to safe levels"         },
+        { 100,  800, "system secure – standby"          },
+    };
+
+    private int  demoStepIndex = 0;
+    private int  demoFromValue = 0;
+    private int  demoToValue   = 0;
+    private int  demoAnimTick  = 0;
+    private int  demoAnimTotal = 0;
+    private int  demoHoldTicks = 0;
+    private boolean demoHolding  = false;
+    private boolean demoRunning  = false;
+
+    // =========================================================
+    public tut1() {
+        setTitle("ALLEN NODE – LPG Integrity System");
+        setSize(560, 780);
+        setMinimumSize(new Dimension(480, 720));
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setLayout(new BorderLayout(0, 0));
+        getContentPane().setBackground(new Color(15, 17, 30));
+
+        add(buildHeader(),      BorderLayout.NORTH);
+        add(buildCenter(),      BorderLayout.CENTER);
+        add(buildBottomPanel(), BorderLayout.SOUTH);
+
+        setLocationRelativeTo(null);
+        updateUI(0);
+
+        // Auto-start demo after 1 second
+        Timer startDelay = new Timer(1000, e -> startDemo());
+        startDelay.setRepeats(false);
+        startDelay.start();
+    }
+
+    // =========================================================
+    //  DEMO ENGINE
+    // =========================================================
+    private void startDemo() {
+        demoRunning   = true;
+        demoStepIndex = 0;
+        demoHolding   = false;
+        peakValue     = 0;
+        breachCount   = 0;
+        wasInDanger   = false;
+        peakValueLabel.setText("0");
+        breachCountLabel.setText("0");
+        loadNextStep();
+
+        demoTimer = new Timer(16, e -> tickDemo());
+        demoTimer.start();
+        simSlider.setEnabled(false);
+    }
+
+    private void stopDemo() {
+        demoRunning = false;
+        if (demoTimer != null) demoTimer.stop();
+        demoStepLabel.setText("Manual mode – drag slider below");
+        simSlider.setEnabled(true);
+    }
+
+    private void loadNextStep() {
+        if (demoStepIndex >= DEMO_STEPS.length) {
+            demoStepIndex = 0;
+        }
+        Object[] step  = DEMO_STEPS[demoStepIndex];
+        demoToValue    = (int)    step[0];
+        int holdMs     = (int)    step[1];
+        String label   = (String) step[2];
+
+        demoFromValue  = currentValue;
+        demoAnimTotal  = Math.max(1, Math.abs(demoToValue - demoFromValue) / 8);
+        demoAnimTick   = 0;
+        demoHoldTicks  = holdMs / 16;
+        demoHolding    = false;
+
+        demoStepLabel.setText("Demo step " + (demoStepIndex + 1) + "/" + DEMO_STEPS.length + ":  " + label);
+    }
+
+    private void tickDemo() {
+        if (!demoRunning) return;
+
+        if (!demoHolding) {
+            demoAnimTick++;
+            double progress = Math.min(1.0, (double) demoAnimTick / demoAnimTotal);
+            // Ease in-out cubic
+            double eased = progress < 0.5
+                ? 2 * progress * progress
+                : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+            int val = (int)(demoFromValue + eased * (demoToValue - demoFromValue));
+            simSlider.setValue(val);
+            updateUI(val);
+
+            if (demoAnimTick >= demoAnimTotal) {
+                demoHolding   = true;
+                demoHoldTicks = ((int) DEMO_STEPS[demoStepIndex][1]) / 16;
+            }
+        } else {
+            demoHoldTicks--;
+            if (demoHoldTicks <= 0) {
+                demoStepIndex++;
+                loadNextStep();
+            }
+        }
+    }
+
+    // =========================================================
+    //  HEADER
+    // =========================================================
+    private JPanel buildHeader() {
+        JPanel p = new JPanel(new BorderLayout());
+        p.setBackground(new Color(20, 22, 40));
+        p.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(0, 0, 1, 0, new Color(50, 55, 90)),
+            BorderFactory.createEmptyBorder(16, 20, 16, 20)
+        ));
+
+        JLabel title = new JLabel("ALLEN NODE  ·  LPG INTEGRITY MONITOR");
+        title.setFont(new Font("Monospaced", Font.BOLD, 15));
+        title.setForeground(new Color(180, 190, 230));
+
+        JLabel sub = new JLabel("PROTOTYPE v2.0");
+        sub.setFont(new Font("Monospaced", Font.PLAIN, 11));
+        sub.setForeground(new Color(90, 100, 140));
+
+        JPanel textCol = new JPanel(new GridLayout(2, 1, 0, 2));
+        textCol.setOpaque(false);
+        textCol.add(title);
+        textCol.add(sub);
+
+        JLabel liveDot = new JLabel("● LIVE");
+        liveDot.setFont(new Font("Monospaced", Font.BOLD, 11));
+        liveDot.setForeground(new Color(50, 220, 120));
+
+        p.add(textCol,  BorderLayout.WEST);
+        p.add(liveDot,  BorderLayout.EAST);
+        return p;
+    }
+
+    // =========================================================
+    //  CENTER
+    // =========================================================
+    private JPanel buildCenter() {
+        JPanel p = new JPanel();
+        p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
+        p.setOpaque(false);
+        p.setBorder(BorderFactory.createEmptyBorder(10, 20, 10, 20));
+
+        JPanel readoutRow = new JPanel(new FlowLayout(FlowLayout.CENTER, 24, 0));
+        readoutRow.setOpaque(false);
+
+        gasValueLabel = new JLabel("0");
+        gasValueLabel.setFont(new Font("Monospaced", Font.BOLD, 88));
+        gasValueLabel.setForeground(new Color(233, 69, 96));
+        gasValueLabel.setAlignmentY(Component.CENTER_ALIGNMENT);
+
+        colorIndicator = new LPGColorIndicator();
+        colorIndicator.setPreferredSize(new Dimension(80, 80));
+
+        readoutRow.add(gasValueLabel);
+        readoutRow.add(colorIndicator);
+        p.add(readoutRow);
+
+        JLabel unitLabel = new JLabel("ADC  ( 0 – 4095 )");
+        unitLabel.setFont(new Font("Monospaced", Font.PLAIN, 12));
+        unitLabel.setForeground(new Color(90, 100, 140));
+        unitLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        p.add(unitLabel);
+        p.add(Box.createVerticalStrut(10));
+
+        gasGauge = new JProgressBar(0, 4095);
+        gasGauge.setValue(0);
+        gasGauge.setStringPainted(false);
+        gasGauge.setForeground(new Color(39, 174, 96));
+        gasGauge.setBackground(new Color(30, 32, 55));
+        gasGauge.setPreferredSize(new Dimension(Integer.MAX_VALUE, 22));
+        gasGauge.setMaximumSize(new Dimension(Integer.MAX_VALUE, 22));
+        gasGauge.setBorder(BorderFactory.createLineBorder(new Color(50, 55, 90), 1));
+        p.add(gasGauge);
+        p.add(Box.createVerticalStrut(4));
+
+        JPanel markerRow = new JPanel(new BorderLayout());
+        markerRow.setOpaque(false);
+        JLabel safe = new JLabel("SAFE");
+        safe.setFont(new Font("Monospaced", Font.PLAIN, 9));
+        safe.setForeground(new Color(39, 174, 96));
+        JLabel warn = new JLabel("WARN ▲2000");
+        warn.setFont(new Font("Monospaced", Font.PLAIN, 9));
+        warn.setForeground(new Color(241, 196, 15));
+        warn.setHorizontalAlignment(SwingConstants.CENTER);
+        JLabel danger = new JLabel("DANGER ▲3000");
+        danger.setFont(new Font("Monospaced", Font.PLAIN, 9));
+        danger.setForeground(new Color(231, 76, 60));
+        danger.setHorizontalAlignment(SwingConstants.RIGHT);
+        markerRow.add(safe,   BorderLayout.WEST);
+        markerRow.add(warn,   BorderLayout.CENTER);
+        markerRow.add(danger, BorderLayout.EAST);
+        p.add(markerRow);
+        p.add(Box.createVerticalStrut(14));
+
+        JPanel statsRow = new JPanel(new GridLayout(1, 2, 12, 0));
+        statsRow.setOpaque(false);
+        statsRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 80));
+        statsRow.add(buildStatCard("PEAK READING",      "0", c -> peakValueLabel   = c));
+        statsRow.add(buildStatCard("OVER-LIMIT EVENTS", "0", c -> breachCountLabel = c));
+        p.add(statsRow);
+        p.add(Box.createVerticalStrut(14));
+
+        statusPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        statusPanel.setBackground(new Color(39, 174, 96));
+        statusPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 60));
+        statusPanel.setOpaque(true);
+
+        statusIcon = new JLabel("✅");
+        statusIcon.setFont(new Font("Segoe UI Emoji", Font.PLAIN, 22));
+        statusText = new JLabel("SYSTEM SECURE");
+        statusText.setFont(new Font("Monospaced", Font.BOLD, 16));
+        statusText.setForeground(Color.WHITE);
+
+        statusPanel.add(statusIcon);
+        statusPanel.add(statusText);
+        statusPanel.setBorder(BorderFactory.createLineBorder(new Color(0,0,0,60), 1));
+        p.add(statusPanel);
+
+        return p;
+    }
+
+    private interface LabelWire { void wire(JLabel l); }
+    private JPanel buildStatCard(String title, String initialVal, LabelWire wire) {
+        JPanel card = new JPanel(new GridLayout(2, 1, 0, 4));
+        card.setBackground(new Color(22, 24, 44));
+        card.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(new Color(50, 55, 90), 1),
+            BorderFactory.createEmptyBorder(8, 12, 8, 12)
+        ));
+        JLabel t = new JLabel(title);
+        t.setFont(new Font("Monospaced", Font.PLAIN, 10));
+        t.setForeground(new Color(90, 100, 140));
+        JLabel v = new JLabel(initialVal);
+        v.setFont(new Font("Monospaced", Font.BOLD, 28));
+        v.setForeground(Color.WHITE);
+        wire.wire(v);
+        card.add(t);
+        card.add(v);
+        return card;
+    }
+
+    // =========================================================
+    //  BOTTOM PANEL
+    // =========================================================
+    private JPanel buildBottomPanel() {
+        JPanel p = new JPanel(new BorderLayout(0, 8));
+        p.setOpaque(false);
+        p.setBorder(BorderFactory.createEmptyBorder(0, 20, 16, 20));
+
+        potPanel = new PotentiometerPanel();
+        potPanel.setPreferredSize(new Dimension(Integer.MAX_VALUE, 110));
+        p.add(potPanel, BorderLayout.NORTH);
+
+        // Demo label
+        demoStepLabel = new JLabel("Initialising demo...");
+        demoStepLabel.setFont(new Font("Monospaced", Font.ITALIC, 10));
+        demoStepLabel.setForeground(new Color(120, 200, 255));
+
+        // Slider
+        simSlider = new JSlider(0, 4095, 0);
+        simSlider.setOpaque(false);
+        simSlider.setForeground(new Color(180, 190, 230));
+        simSlider.addChangeListener(e -> {
+            if (simSlider.isEnabled()) updateUI(simSlider.getValue());
+        });
+
+        JLabel sliderLabel = new JLabel("▶  MANUAL OVERRIDE  ( drag slider when in manual mode )");
+        sliderLabel.setFont(new Font("Monospaced", Font.PLAIN, 10));
+        sliderLabel.setForeground(new Color(90, 100, 140));
+
+        // Buttons
+        JPanel btnRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        btnRow.setOpaque(false);
+
+        JButton btnDemo   = makeButton("▶ Run Demo",     new Color(39, 110, 180));
+        JButton btnManual = makeButton("✋ Manual Mode",  new Color(80, 60, 110));
+        JButton btnReset  = makeButton("↺ Reset Stats",  new Color(50, 80, 60));
+
+        btnDemo.addActionListener(e -> startDemo());
+        btnManual.addActionListener(e -> stopDemo());
+        btnReset.addActionListener(e -> {
+            peakValue = 0; breachCount = 0; wasInDanger = false;
+            peakValueLabel.setText("0");
+            breachCountLabel.setText("0");
+        });
+
+        btnRow.add(btnDemo);
+        btnRow.add(btnManual);
+        btnRow.add(btnReset);
+
+        JPanel sliderSection = new JPanel(new BorderLayout(0, 4));
+        sliderSection.setOpaque(false);
+        sliderSection.add(demoStepLabel, BorderLayout.NORTH);
+        sliderSection.add(sliderLabel,   BorderLayout.CENTER);
+        sliderSection.add(simSlider,     BorderLayout.SOUTH);
+
+        p.add(sliderSection, BorderLayout.CENTER);
+        p.add(btnRow,        BorderLayout.SOUTH);
+        return p;
+    }
+
+    private JButton makeButton(String text, Color bg) {
+        JButton b = new JButton(text);
+        b.setFont(new Font("Monospaced", Font.BOLD, 10));
+        b.setBackground(bg);
+        b.setForeground(Color.WHITE);
+        b.setFocusPainted(false);
+        b.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(bg.brighter(), 1),
+            BorderFactory.createEmptyBorder(4, 10, 4, 10)
+        ));
+        b.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        return b;
+    }
+
+    // =========================================================
+    //  UPDATE LOGIC
+    // =========================================================
+    private void updateUI(int value) {
+        currentValue = value;
+
+        if (value > peakValue) {
+            peakValue = value;
+            peakValueLabel.setText(String.valueOf(peakValue));
+        }
+
+        boolean inDanger = value >= 3000;
+        if (inDanger && !wasInDanger) {
+            breachCount++;
+            breachCountLabel.setText(String.valueOf(breachCount));
+        }
+        wasInDanger = inDanger;
+
+        gasValueLabel.setText(String.valueOf(value));
+        gasGauge.setValue(value);
+
+        String zone;
+        Color zoneColor;
+        if (value >= 3000) {
+            zone      = "DANGER";
+            zoneColor = new Color(231, 76, 60);
+            statusIcon.setText("🚨");
+            statusText.setText("DANGER: LPG LEAK DETECTED!");
+            statusPanel.setBackground(new Color(180, 30, 20));
+            gasGauge.setForeground(Color.RED);
+            gasValueLabel.setForeground(new Color(255, 80, 80));
+        } else if (value >= 2000) {
+            zone      = "WARNING";
+            zoneColor = new Color(241, 196, 15);
+            statusIcon.setText("⚠️");
+            statusText.setText("WARNING: ELEVATED GAS LEVEL");
+            statusPanel.setBackground(new Color(180, 140, 10));
+            gasGauge.setForeground(Color.ORANGE);
+            gasValueLabel.setForeground(new Color(241, 196, 15));
+        } else {
+            zone      = "SAFE";
+            zoneColor = new Color(39, 174, 96);
+            statusIcon.setText("✅");
+            statusText.setText("SYSTEM SECURE");
+            statusPanel.setBackground(new Color(30, 140, 80));
+            gasGauge.setForeground(new Color(39, 174, 96));
+            gasValueLabel.setForeground(new Color(80, 220, 140));
+        }
+
+        colorIndicator.setZone(zone, zoneColor);
+        potPanel.update(value, zone, zoneColor);
+        repaint();
+    }
+
+    // =========================================================
+    //  LPG COLOR INDICATOR
+    // =========================================================
+    static class LPGColorIndicator extends JPanel {
+        private Color  lampColor = new Color(39, 174, 96);
+        private String zoneLabel = "SAFE";
+        private float  glowAlpha = 0.4f;
+
+        LPGColorIndicator() {
+            setOpaque(false);
+            new Timer(60, e -> {
+                glowAlpha = (float)(0.25 + 0.25 * Math.sin(System.currentTimeMillis() / 350.0));
+                repaint();
+            }).start();
+        }
+
+        void setZone(String zone, Color color) {
+            zoneLabel = zone; lampColor = color; repaint();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            int w = getWidth(), h = getHeight();
+            int r = Math.min(w, h) - 16;
+            int x = (w - r) / 2, y = (h - r) / 2;
+            g2.setColor(new Color(lampColor.getRed(), lampColor.getGreen(), lampColor.getBlue(),
+                                  (int)(glowAlpha * 180)));
+            g2.fillOval(x - 8, y - 8, r + 16, r + 16);
+            g2.setColor(lampColor);
+            g2.fillOval(x, y, r, r);
+            g2.setColor(new Color(255, 255, 255, 60));
+            g2.fillOval(x + r/5, y + r/8, r/2, r/3);
+            g2.setColor(new Color(0, 0, 0, 80));
+            g2.setStroke(new BasicStroke(2));
+            g2.drawOval(x, y, r, r);
+            g2.setFont(new Font("Monospaced", Font.BOLD, 9));
+            g2.setColor(lampColor.brighter());
+            FontMetrics fm = g2.getFontMetrics();
+            g2.drawString(zoneLabel, (w - fm.stringWidth(zoneLabel)) / 2, y + r + 12);
+            g2.dispose();
+        }
+    }
+
+    // =========================================================
+    //  POTENTIOMETER PANEL
+    // =========================================================
+    static class PotentiometerPanel extends JPanel {
+        private int    value     = 0;
+        private String zone      = "SAFE";
+        private Color  zoneColor = new Color(39, 174, 96);
+        private double angle     = 0;
+
+        PotentiometerPanel() {
+            setOpaque(false);
+            setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(50, 55, 90), 1),
+                BorderFactory.createEmptyBorder(8, 12, 8, 12)
+            ));
+        }
+
+        void update(int v, String z, Color c) {
+            value = v; zone = z; zoneColor = c;
+            angle = Math.toRadians(-135 + (270.0 * v / 4095.0));
+            repaint();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            int w = getWidth(), h = getHeight();
+            g2.setFont(new Font("Monospaced", Font.BOLD, 10));
+            g2.setColor(new Color(90, 100, 140));
+            g2.drawString("POTENTIOMETER STATUS", 0, 12);
+            int knobSize = Math.min(h - 28, 70);
+            int kx = 8, ky = (h - knobSize) / 2 + 6;
+            g2.setColor(new Color(40, 44, 70));
+            g2.setStroke(new BasicStroke(5, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g2.drawArc(kx + 3, ky + 3, knobSize - 6, knobSize - 6, 225, -270);
+            g2.setColor(zoneColor);
+            int sweep = (int)(270.0 * value / 4095.0);
+            g2.drawArc(kx + 3, ky + 3, knobSize - 6, knobSize - 6, 225, -sweep);
+            g2.setColor(new Color(35, 38, 62));
+            g2.fillOval(kx + 8, ky + 8, knobSize - 16, knobSize - 16);
+            g2.setColor(new Color(60, 65, 100));
+            g2.setStroke(new BasicStroke(1.5f));
+            g2.drawOval(kx + 8, ky + 8, knobSize - 16, knobSize - 16);
+            int cx = kx + knobSize / 2, cy = ky + knobSize / 2;
+            int pLen = knobSize / 2 - 12;
+            int px = (int)(cx + pLen * Math.cos(angle));
+            int py = (int)(cy + pLen * Math.sin(angle));
+            g2.setColor(zoneColor);
+            g2.setStroke(new BasicStroke(2.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g2.drawLine(cx, cy, px, py);
+            g2.setColor(zoneColor.brighter());
+            g2.fillOval(cx - 4, cy - 4, 8, 8);
+            int tx = kx + knobSize + 18, ty = ky + 14;
+            g2.setFont(new Font("Monospaced", Font.PLAIN, 10));
+            g2.setColor(new Color(90, 100, 140));
+            g2.drawString("RAW ADC VALUE", tx, ty);
+            g2.setFont(new Font("Monospaced", Font.BOLD, 26));
+            g2.setColor(zoneColor);
+            g2.drawString(String.valueOf(value), tx, ty + 28);
+            int pct = (int)(100.0 * value / 4095);
+            g2.setFont(new Font("Monospaced", Font.PLAIN, 11));
+            g2.setColor(new Color(150, 160, 200));
+            g2.drawString(pct + "%  of max range", tx, ty + 46);
+            g2.setColor(new Color(zoneColor.getRed(), zoneColor.getGreen(), zoneColor.getBlue(), 40));
+            g2.fillRoundRect(tx, ty + 52, 100, 20, 6, 6);
+            g2.setColor(zoneColor);
+            g2.setFont(new Font("Monospaced", Font.BOLD, 10));
+            g2.drawString("ZONE: " + zone, tx + 6, ty + 66);
+            g2.dispose();
+        }
+    }
+
+    // =========================================================
+    //  MAIN
+    // =========================================================
+    public static void main(String[] args) {
+        try { UIManager.setLookAndFeel(UIManager.getCrossPlatformLookAndFeelClassName()); }
+        catch (Exception ignored) {}
+        SwingUtilities.invokeLater(() -> new tut1().setVisible(true));
+    }
+}
